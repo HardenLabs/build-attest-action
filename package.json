@@ -1,0 +1,34 @@
+{
+  "name": "@hardenlabs/build-attest",
+  "version": "1.0.0",
+  "description": "Harden build attestation - GitHub Action and CLI for CI/CD OIDC-based build key generation",
+  "main": "dist/cli.js",
+  "bin": {
+    "harden-attest": "bin/harden-attest"
+  },
+  "scripts": {
+    "build": "npm run build:action && npm run build:cli",
+    "build:action": "ncc build src/action.ts -o dist/action --minify",
+    "build:cli": "tsc --outDir dist/cli",
+    "test": "node --test __tests__/*.test.js"
+  },
+  "files": [
+    "dist/cli/",
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HardenLabs/build-attest-action.git"
+  },
+  "keywords": ["harden", "build-attestation", "oidc", "ci-cd", "security"],
+  "author": "HardenLabs",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.7.0"
+  }
+}

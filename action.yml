@@ -1,0 +1,35 @@
+name: 'Harden Build Attestation'
+description: 'Attest a CI/CD build with Harden using OIDC — makes leaked credentials provably insufficient'
+author: 'HardenLabs'
+branding:
+  icon: 'shield'
+  color: 'blue'
+inputs:
+  client-id:
+    description: 'Harden OAuth client ID'
+    required: true
+  client-secret:
+    description: 'Harden OAuth client secret'
+    required: true
+  service-id:
+    description: 'Harden service ID (svc_xxxx)'
+    required: true
+  api-endpoint:
+    description: 'Harden API endpoint'
+    required: false
+    default: 'https://api.hardenapi.com'
+  commit-sha:
+    description: 'Override commit SHA (defaults to current commit)'
+    required: false
+  max-retries:
+    description: 'Max retry attempts for attestation API call'
+    required: false
+    default: '3'
+outputs:
+  build-key:
+    description: 'The build attestation key to embed in your deployment'
+  commit-sha:
+    description: 'The commit SHA used for attestation'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
