@@ -17,6 +17,7 @@ async function run(): Promise<void> {
     const clientSecret = core.getInput('client-secret', { required: true });
     const serviceId = core.getInput('service-id', { required: true });
     const apiEndpoint = core.getInput('api-endpoint') || 'https://api.hardenapi.com';
+    const tokenEndpoint = core.getInput('token-endpoint') || undefined;
     const maxRetries = parseInt(core.getInput('max-retries') || '3', 10);
 
     // Determine commit SHA
@@ -51,6 +52,7 @@ async function run(): Promise<void> {
       clientSecret,
       serviceId,
       apiEndpoint,
+      tokenEndpoint,
       oidcToken,
       commitSha,
       maxRetries,

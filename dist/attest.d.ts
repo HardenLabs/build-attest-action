@@ -12,6 +12,7 @@ export interface AttestOptions {
     clientSecret: string;
     serviceId: string;
     apiEndpoint: string;
+    tokenEndpoint?: string;
     oidcToken: string;
     commitSha: string;
     maxRetries: number;

@@ -50,7 +50,7 @@ function validateOptions(options) {
     }
 }
 async function authenticate(options) {
-    const tokenUrl = `${options.apiEndpoint.replace(/\/$/, '')}/v1/oauth/token`;
+    const tokenUrl = options.tokenEndpoint || `${options.apiEndpoint.replace(/\/$/, '')}/v1/oauth/token`;
     const body = new URLSearchParams({
         grant_type: 'client_credentials',
         client_id: options.clientId,

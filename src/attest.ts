@@ -13,6 +13,7 @@ export interface AttestOptions {
   clientSecret: string;
   serviceId: string;
   apiEndpoint: string;
+  tokenEndpoint?: string; // Override OAuth token endpoint (e.g., direct Cognito URL)
   oidcToken: string;
   commitSha: string;
   maxRetries: number;
@@ -81,7 +82,7 @@ function validateOptions(options: AttestOptions): void {
 }
 
 async function authenticate(options: AttestOptions): Promise<string> {
-  const tokenUrl = `${options.apiEndpoint.replace(/\/$/, '')}/v1/oauth/token`;
+  const tokenUrl = options.tokenEndpoint || `${options.apiEndpoint.replace(/\/$/, '')}/v1/oauth/token`;
 
   const body = new URLSearchParams({
     grant_type: 'client_credentials',

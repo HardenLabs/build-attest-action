@@ -18,6 +18,9 @@ inputs:
     description: 'Harden API endpoint'
     required: false
     default: 'https://api.hardenapi.com'
+  token-endpoint:
+    description: 'Override OAuth token endpoint (e.g., direct Cognito URL)'
+    required: false
   commit-sha:
     description: 'Override commit SHA (defaults to current commit)'
     required: false
