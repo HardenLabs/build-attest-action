@@ -28,11 +28,21 @@ inputs:
     description: 'Max retry attempts for attestation API call'
     required: false
     default: '3'
+  inject:
+    description: 'Auto-inject build key into SDK source files (true/false). Searches for %%HARDEN_BUILD_KEY%% placeholders.'
+    required: false
+    default: 'true'
+  search-path:
+    description: 'Directory to search for SDK placeholder files (default: current directory)'
+    required: false
+    default: '.'
 outputs:
   build-key:
-    description: 'The build attestation key to embed in your deployment'
+    description: 'The build attestation key (also injected into SDK if inject=true)'
   commit-sha:
     description: 'The commit SHA used for attestation'
+  injected-files:
+    description: 'Number of files where placeholders were replaced'
 runs:
   using: 'node20'
   main: 'dist/index.js'
