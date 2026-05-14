@@ -244,11 +244,6 @@ runs:
         config_bytes = resp.read()
         config = json.loads(config_bytes)
         build_id = config.get("build_id", "")
-
-        # Inject active_environment so SDKs can auto-select without runtime env vars
-        config["active_environment"] = "production" if is_production else "sandbox"
-        config_bytes = json.dumps(config).encode()
-
         config_hash = hashlib.sha256(config_bytes).hexdigest()
 
         # Extract aliases from environments block
