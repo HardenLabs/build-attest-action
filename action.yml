@@ -140,9 +140,9 @@ runs:
         print(f"Attesting with {len(all_values)} connection(s)" +
               (f" ({len(connections_map)} named)" if connections_map else ""))
 
-        # Derive is_production from environment (production/sandbox distinction)
+        # Derive is_production from environment (only sandbox maps to sandbox)
         env_name = os.environ.get("HARDEN_ENVIRONMENT", "production")
-        is_production = env_name not in ("sandbox", "development")
+        is_production = env_name != "sandbox"
 
         # Resolve auth mode
         auth_mode = os.environ.get("AUTH_MODE", "auto").strip().lower()
