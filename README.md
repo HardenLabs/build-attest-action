@@ -1,6 +1,6 @@
 # Harden Build Attestation
 
-GitHub Action and CLI for CI/CD build-time attestation. Proves that an SDK artifact was built by a registered CI/CD pipeline using OIDC verification, making leaked credentials provably insufficient.
+GitHub Action for CI/CD build-time attestation. Proves that an SDK artifact was built by a registered CI/CD pipeline using OIDC or HMAC verification, generating a `harden.config` that the SDK reads at startup.
 
 ## GitHub Actions
 
@@ -9,85 +9,100 @@ jobs:
   build:
     permissions:
       id-token: write  # Required for OIDC
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: HardenLabs/build-attest-action@v1
-        id: attest
+      - name: Attest to Harden
+        uses: HardenLabs/build-attest-action@v2
         with:
-          client-id: ${{ secrets.HARDEN_CLIENT_ID }}
-          client-secret: ${{ secrets.HARDEN_CLIENT_SECRET }}
-          service-id: svc_myapp_server_a1b2
+          connections: ${{ secrets.HARDEN_CONN_MY_SERVER }}
+          environment: production
 
-      # Use the build key in your deployment
-      - run: echo "HARDEN_BUILD_KEY=${{ steps.attest.outputs.build-key }}" >> deployment.env
+      - name: Build your application
+        run: dotnet build  # harden.config is now available
+```
+
+### Multiple Connections
+
+```yaml
+      - uses: HardenLabs/build-attest-action@v2
+        with:
+          connections: |
+            ${{ secrets.HARDEN_CONN_SERVICE_A }}
+            ${{ secrets.HARDEN_CONN_SERVICE_B }}
+          environment: production
+```
+
+### Named Connections (alias mapping)
+
+```yaml
+      - uses: HardenLabs/build-attest-action@v2
+        with:
+          connections: |
+            my-api=${{ secrets.HARDEN_CONN_MY_API }}
+            payments=${{ secrets.HARDEN_CONN_PAYMENTS }}
+          environment: production
 ```
 
 ### Inputs
 
-| Input | Required | Description |
-|-------|----------|-------------|
-| `client-id` | Yes | Harden OAuth client ID |
-| `client-secret` | Yes | Harden OAuth client secret |
-| `service-id` | Yes | Harden service ID (`svc_xxxx`) |
-| `api-endpoint` | No | Harden API URL (default: `https://api.hardenapi.com`) |
-| `commit-sha` | No | Override commit SHA (default: current commit) |
-| `max-retries` | No | Max retry attempts on 5xx (default: `3`) |
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `connections` | Yes | | Connection values (one per line, `hc_...` or `alias=hc_...`) |
+| `environment` | No | `production` | Harden environment: `production`, `sandbox`, `labs`, `development` |
+| `auth` | No | `auto` | Auth mode: `oidc`, `hmac`, or `auto` (OIDC when available, HMAC fallback) |
+| `config-path` | No | `harden.config` | Path to write the generated config file |
+| `platform` | No | `github_actions` | CI platform identifier |
+| `allowed-ips` | No | | Comma-separated allowed IPs for this build |
+| `allowed-cidrs` | No | | Comma-separated allowed CIDR ranges for this build |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
-| `build-key` | The build attestation key (masked in logs) |
-| `commit-sha` | The commit SHA used for attestation |
-
-## CLI (for GitLab, Azure DevOps, CircleCI, etc.)
-
-Install globally or use `npx`:
-
-```bash
-npx @hardenlabs/build-attest \
-  --client-id $HARDEN_CLIENT_ID \
-  --client-secret $HARDEN_CLIENT_SECRET \
-  --service-id svc_myapp_server_a1b2 \
-  --oidc-token $CI_JOB_JWT \
-  --commit-sha $CI_COMMIT_SHA
-```
-
-Output:
-```
-HARDEN_BUILD_KEY=abc123...
-HARDEN_COMMIT_SHA=def456...
-```
-
-Use `--json` for JSON output. Use `eval $(...)` to capture as environment variables.
-
-All arguments can also be set via environment variables: `HARDEN_CLIENT_ID`, `HARDEN_CLIENT_SECRET`, `HARDEN_SERVICE_ID`, `HARDEN_OIDC_TOKEN`, `CI_COMMIT_SHA`.
+| `build-id` | Build ID from the attestation response |
+| `config-hash` | SHA-256 hash of the generated `harden.config` |
+| `aliases` | Comma-separated list of connection aliases in the config |
 
 ## How it works
 
-1. Authenticates with Harden via OAuth client credentials
-2. Requests a CI/CD OIDC token (GitHub Action does this automatically; CLI takes it as input)
-3. Sends the OIDC token + commit SHA to Harden's attestation endpoint
-4. Harden verifies the OIDC token against the CI provider's JWKS public keys
-5. Harden computes `build_key = HMAC-SHA256(service_salt, commit_sha)` and returns it
-6. The build key is embedded in the deployment as an environment variable
-7. At runtime, the SDK sends the build key to the Key API, which validates it
+1. Authenticates with Harden via OIDC token (GitHub Actions) or HMAC challenge
+2. Sends the connection value + platform context to the attestation endpoint
+3. Harden verifies identity and returns a signed `harden.config`
+4. The config is written to disk (default: `harden.config`, mode `0600`)
+5. At runtime, the SDK reads `harden.config` to obtain ephemeral keys
 
-If attestation fails (OIDC mismatch, service not found, Harden unavailable after retries), the build fails. No artifact is produced without a valid build key.
+If attestation fails, the step fails and no config is produced. The build cannot proceed without valid attestation.
+
+## Migrating from v1
+
+V1 used OAuth client credentials (`client-id`, `client-secret`, `service-id`). V2 uses connection values directly:
+
+```yaml
+# v1 (deprecated)
+- uses: HardenLabs/build-attest-action@v1
+  with:
+    client-id: ${{ secrets.HARDEN_CLIENT_ID }}
+    client-secret: ${{ secrets.HARDEN_CLIENT_SECRET }}
+    service-id: svc_myapp_server_a1b2
+
+# v2
+- uses: HardenLabs/build-attest-action@v2
+  with:
+    connections: ${{ secrets.HARDEN_CONN_MY_SERVER }}
+    environment: production
+```
 
 ## Troubleshooting
 
 **"Failed to get OIDC token"** - Add `permissions: id-token: write` to your workflow job.
 
-**"OAuth authentication failed (401)"** - Check that `client-id` and `client-secret` are correct.
+**"No connection values provided"** - Set the `connections` input. The value should start with `hc_` or `hs_`.
 
-**"Attestation rejected (403)"** - Check that:
-- Build attestation is enabled on the service
-- An OIDC registration exists matching this repository
-- The branch pattern allows this ref
+**"Attestation failed: HTTP 403"** - Check that the connection is active and TOFU binding allows this repository.
 
-**Network errors** - The CLI retries 5xx errors with exponential backoff. 4xx errors fail immediately.
+**"Unknown environment"** - Must be one of: `production`, `sandbox`, `labs`, `development`.
 
 ## License
 

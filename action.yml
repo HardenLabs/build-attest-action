@@ -1,48 +1,260 @@
-name: 'Harden Build Attestation'
-description: 'Attest a CI/CD build with Harden using OIDC — makes leaked credentials provably insufficient'
-author: 'HardenLabs'
-branding:
-  icon: 'shield'
-  color: 'blue'
+name: Harden Build Attestation
+description: Attest a build via the Harden API and write harden.config
+
 inputs:
-  client-id:
-    description: 'Harden OAuth client ID'
-    required: true
-  client-secret:
-    description: 'Harden OAuth client secret'
-    required: true
-  service-id:
-    description: 'Harden service ID (svc_xxxx)'
-    required: true
-  api-endpoint:
-    description: 'Harden API endpoint'
+  connections:
+    description: >
+      Connection values to include in harden.config (one per line).
+      The first value authenticates the request. All must belong to the same account.
     required: false
-    default: 'https://api.hardenapi.com'
-  token-endpoint:
-    description: 'Override OAuth token endpoint (e.g., direct Cognito URL)'
+  connection:
+    description: >
+      (Deprecated: use 'connections' instead.) Single connection value.
+      Kept for backward compatibility with existing workflows.
     required: false
-  commit-sha:
-    description: 'Override commit SHA (defaults to current commit)'
+  environment:
+    description: 'Harden environment: production, sandbox, labs, development'
+    default: production
+  attestation-url:
+    description: >
+      (Deprecated: use 'environment' instead.) Full attestation endpoint URL.
+      When provided, overrides the URL derived from 'environment'.
     required: false
-  max-retries:
-    description: 'Max retry attempts for attestation API call'
+  config-path:
+    description: Path to write harden.config
+    default: harden.config
+  auth:
+    description: >
+      Authentication mode: oidc, hmac, or auto.
+      oidc: Use GitHub Actions OIDC token (requires id-token: write permission).
+      hmac: Use HMAC challenge with the connection value as the key.
+      auto: Use OIDC when available, fall back to HMAC.
+    default: auto
+  platform:
+    description: CI platform identifier
+    default: github_actions
+  allowed-ips:
+    description: >
+      Comma-separated list of allowed IP addresses for this build.
+      When specified, key fetches from IPs not in this list will be blocked.
+      Supports IPv4 and IPv6 addresses.
     required: false
-    default: '3'
-  inject:
-    description: 'Auto-inject build key into SDK source files (true/false). Searches for %%HARDEN_BUILD_KEY%% placeholders.'
+  allowed-cidrs:
+    description: >
+      Comma-separated list of allowed CIDR ranges for this build.
+      When specified, key fetches from IPs not in these ranges will be blocked.
+      Supports IPv4 and IPv6 CIDR notation (e.g., 10.0.0.0/8, 192.168.1.0/24).
     required: false
-    default: 'true'
-  search-path:
-    description: 'Directory to search for SDK placeholder files (default: current directory)'
-    required: false
-    default: '.'
+
 outputs:
-  build-key:
-    description: 'The build attestation key (also injected into SDK if inject=true)'
-  commit-sha:
-    description: 'The commit SHA used for attestation'
-  injected-files:
-    description: 'Number of files where placeholders were replaced'
+  build-id:
+    description: Build ID from attestation response
+    value: ${{ steps.attest.outputs.build-id }}
+  config-hash:
+    description: SHA-256 hash of harden.config bytes
+    value: ${{ steps.attest.outputs.config-hash }}
+  aliases:
+    description: Comma-separated list of connection aliases in the config
+    value: ${{ steps.attest.outputs.aliases }}
+
 runs:
-  using: 'node20'
-  main: 'dist/index.js'
+  using: composite
+  steps:
+    - name: Attest build
+      id: attest
+      shell: bash
+      env:
+        CONNECTIONS: ${{ inputs.connections }}
+        CONNECTION: ${{ inputs.connection }}
+        ATTESTATION_URL: ${{ inputs.attestation-url }}
+        HARDEN_ENVIRONMENT: ${{ inputs.environment }}
+        AUTH_MODE: ${{ inputs.auth }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+        PLATFORM: ${{ inputs.platform }}
+        ALLOWED_IPS: ${{ inputs.allowed-ips }}
+        ALLOWED_CIDRS: ${{ inputs.allowed-cidrs }}
+      run: |
+        python3 - <<'PYEOF'
+        import base64, hashlib, hmac, json, os, secrets, sys, time
+        import urllib.request, urllib.error
+
+        config_path = os.environ["CONFIG_PATH"]
+        platform = os.environ["PLATFORM"]
+
+        # Resolve attestation URL: explicit attestation-url overrides environment
+        attestation_url = os.environ.get("ATTESTATION_URL", "").strip()
+        if attestation_url:
+            url = attestation_url
+        else:
+            env = os.environ.get("HARDEN_ENVIRONMENT", "production")
+            env_urls = {
+                "production": "https://api.hardenapi.com",
+                "sandbox": "https://sandboxapi.hardenapi.com",
+                "labs": "https://labsapi.hardenapi.com",
+                "development": "https://devapi.hardenapi.com",
+            }
+            base = env_urls.get(env)
+            if not base:
+                print(f"Unknown environment: {env}. Must be one of: {', '.join(env_urls)}", file=sys.stderr)
+                sys.exit(1)
+            url = f"{base}/v2/build/attest"
+
+        # Parse connections input. Supports two formats:
+        #   alias=hc_value  (client names the target)
+        #   hc_value        (server's alias used as-is)
+        raw_connections = os.environ.get("CONNECTIONS", "").strip()
+        raw_connection = os.environ.get("CONNECTION", "").strip()
+
+        connections_map = {}  # alias → hc_value (for named entries)
+        plain_values = []     # hc_values without aliases
+
+        if raw_connections:
+            for line in raw_connections.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if '=' in line and not line.startswith(('hc_', 'hs_')):
+                    alias, _, value = line.partition('=')
+                    connections_map[alias.strip()] = value.strip()
+                else:
+                    plain_values.append(line)
+        elif raw_connection:
+            plain_values.append(raw_connection)
+        else:
+            print("No connection values provided. Set 'connections' or 'connection' input.", file=sys.stderr)
+            sys.exit(1)
+
+        all_values = list(connections_map.values()) + plain_values
+        if not all_values:
+            print("No connection values after parsing.", file=sys.stderr)
+            sys.exit(1)
+        for v in all_values:
+            if not (v.startswith("hc_") or v.startswith("hs_")):
+                print(f"Invalid connection prefix: {v[:8]}...", file=sys.stderr)
+                sys.exit(1)
+
+        connection = all_values[0]
+        extra = all_values[1:]
+        use_connections_dict = bool(connections_map)
+
+        print(f"Attesting with {len(all_values)} connection(s)" +
+              (f" ({len(connections_map)} named)" if connections_map else ""))
+
+        # Derive is_production from environment (production/sandbox distinction)
+        env_name = os.environ.get("HARDEN_ENVIRONMENT", "production")
+        is_production = env_name not in ("sandbox", "development")
+
+        # Resolve auth mode
+        auth_mode = os.environ.get("AUTH_MODE", "auto").strip().lower()
+        oidc_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+        oidc_token_env = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+        oidc_available = bool(oidc_url and oidc_token_env)
+
+        use_oidc = False
+        if auth_mode == "oidc":
+            if not oidc_available:
+                print("auth=oidc requested but OIDC is not available (missing id-token permission?)", file=sys.stderr)
+                sys.exit(1)
+            use_oidc = True
+        elif auth_mode == "auto":
+            use_oidc = oidc_available
+        elif auth_mode != "hmac":
+            print(f"Unknown auth mode: {auth_mode}. Must be auto, oidc, or hmac.", file=sys.stderr)
+            sys.exit(1)
+
+        if use_oidc:
+            print("Using OIDC authentication")
+            token_req = urllib.request.Request(
+                f"{oidc_url}&audience=sts.hardenapi.com",
+                headers={"Authorization": f"bearer {oidc_token_env}"},
+            )
+            try:
+                token_resp = urllib.request.urlopen(token_req)
+            except urllib.error.HTTPError as e:
+                print(f"OIDC token request failed: HTTP {e.code}", file=sys.stderr)
+                print(e.read().decode()[:300], file=sys.stderr)
+                sys.exit(1)
+            id_token = json.loads(token_resp.read()).get("value", "")
+            if not id_token:
+                print("Failed to obtain OIDC token from GitHub", file=sys.stderr)
+                sys.exit(1)
+            platform_auth = {"type": "oidc", "id_token": id_token}
+        else:
+            print("Using HMAC challenge authentication")
+            ts = str(int(time.time() * 1000))
+            nonce = secrets.token_urlsafe(16)
+            sig_b64 = base64.b64encode(
+                hmac.new(connection.encode(), f"{ts}{nonce}".encode(), hashlib.sha256).digest()
+            ).decode()
+            platform_auth = {
+                "type": "hmac_challenge",
+                "timestamp_ms": int(ts),
+                "nonce": nonce,
+                "signature": sig_b64,
+            }
+
+        payload = {
+            "connection": connection,
+            "platform": platform,
+            "platform_auth": platform_auth,
+            "is_production": is_production,
+            "build_version": 1,
+        }
+        if use_connections_dict:
+            payload["connections"] = connections_map
+        elif extra:
+            payload["additional_connections"] = extra
+
+        # Optional IP/CIDR restrictions for build-level enforcement
+        allowed_ips_raw = os.environ.get("ALLOWED_IPS", "").strip()
+        if allowed_ips_raw:
+            payload["allowed_ips"] = [ip.strip() for ip in allowed_ips_raw.split(",") if ip.strip()]
+        allowed_cidrs_raw = os.environ.get("ALLOWED_CIDRS", "").strip()
+        if allowed_cidrs_raw:
+            payload["allowed_cidrs"] = [cidr.strip() for cidr in allowed_cidrs_raw.split(",") if cidr.strip()]
+
+        body = json.dumps(payload).encode()
+
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            resp = urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            print(f"Attestation failed: HTTP {e.code}", file=sys.stderr)
+            print(e.read().decode()[:500], file=sys.stderr)
+            sys.exit(1)
+
+        config_bytes = resp.read()
+        config = json.loads(config_bytes)
+        build_id = config.get("build_id", "")
+        config_hash = hashlib.sha256(config_bytes).hexdigest()
+
+        # Extract aliases from environments block
+        aliases = []
+        for env_conns in config.get("environments", {}).values():
+            if isinstance(env_conns, dict):
+                aliases.extend(env_conns.keys())
+        aliases = sorted(set(aliases))
+
+        # Write config with restricted permissions
+        fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(config_bytes)
+
+        # Set outputs
+        gh_output = os.environ.get("GITHUB_OUTPUT", "")
+        if gh_output:
+            with open(gh_output, "a") as f:
+                f.write(f"build-id={build_id}\n")
+                f.write(f"config-hash={config_hash}\n")
+                f.write(f"aliases={','.join(aliases)}\n")
+
+        print(f"Attestation successful: build_id={build_id}")
+        print(f"Config hash: {config_hash}")
+        print(f"Aliases: {', '.join(aliases) if aliases else '(single target)'}")
+        print(f"Written to: {config_path}")
+        PYEOF
