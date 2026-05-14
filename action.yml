@@ -221,12 +221,25 @@ runs:
             method="POST",
         )
 
-        try:
-            resp = urllib.request.urlopen(req)
-        except urllib.error.HTTPError as e:
-            print(f"Attestation failed: HTTP {e.code}", file=sys.stderr)
-            print(e.read().decode()[:500], file=sys.stderr)
-            sys.exit(1)
+        max_retries = 3
+        retry_delay = 3
+        for attempt in range(max_retries + 1):
+            try:
+                resp = urllib.request.urlopen(req)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 503 and attempt < max_retries:
+                    print(f"Service unavailable (503), retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    req = urllib.request.Request(
+                        url, data=body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    continue
+                print(f"Attestation failed: HTTP {e.code}", file=sys.stderr)
+                print(e.read().decode()[:500], file=sys.stderr)
+                sys.exit(1)
 
         config_bytes = resp.read()
         config = json.loads(config_bytes)
