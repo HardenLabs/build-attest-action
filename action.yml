@@ -109,15 +109,17 @@ runs:
         plain_values = []     # hc_values without aliases
 
         if raw_connections:
+            # Split on newlines, then split each line on commas to support both formats
             for line in raw_connections.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                if '=' in line and not line.startswith(('hc_', 'hs_')):
-                    alias, _, value = line.partition('=')
-                    connections_map[alias.strip()] = value.strip()
-                else:
-                    plain_values.append(line)
+                for part in line.split(','):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if '=' in part and not part.startswith(('hc_', 'hs_')):
+                        alias, _, value = part.partition('=')
+                        connections_map[alias.strip()] = value.strip()
+                    else:
+                        plain_values.append(part)
         elif raw_connection:
             plain_values.append(raw_connection)
         else:
